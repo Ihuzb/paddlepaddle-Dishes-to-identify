@@ -1,9 +1,6 @@
 # -*- coding:utf8 -*-
 import sys
 import paddle.v2 as paddle
-from PIL import Image
-import numpy as np
-import os
 
 reload(sys)
 sys.setdefaultencoding('utf8')
@@ -49,6 +46,61 @@ net = vgg_bn_drop(image)
 out = paddle.layer.fc(input=net,
                       size=classdim,
                       act=paddle.activation.Softmax())
+lbl = paddle.layer.data(
+    name="label", type=paddle.data_type.integer_value(classdim))
+cost = paddle.layer.classification_cost(input=out, label=lbl)
+parameters = paddle.parameters.create(cost)
+print parameters.keys()
+# Create optimizer
+momentum_optimizer = paddle.optimizer.Momentum(
+    momentum=0.9,
+    regularization=paddle.optimizer.L2Regularization(rate=0.0002 * 128),
+    learning_rate=0.1 / 128.0,
+    learning_rate_decay_a=0.1,
+    learning_rate_decay_b=7000 * 100,
+    learning_rate_schedule='discexp')
+
+# Create trainer
+trainer = paddle.trainer.SGD(cost=cost,
+                             parameters=parameters,
+                             update_equation=momentum_optimizer)
+reader = paddle.batch(
+    paddle.reader.shuffle(
+        paddle.dataset.cifar.reader_creator('./ci/Foods.tar.gz', 'data_batch_0'), buf_size=7000),
+    batch_size=128)
+feeding = {'image': 0, 'label': 1}
+
+
+# End batch and end pass event handler
+def event_handler(event):
+    if isinstance(event, paddle.event.EndIteration):
+        if event.batch_id % 100 == 0:
+            print "\nPass %d, Batch %d, Cost %f, %s" % (
+                event.pass_id, event.batch_id, event.cost, event.metrics)
+        else:
+            sys.stdout.write('.')
+            sys.stdout.flush()
+    if isinstance(event, paddle.event.EndPass):
+        # save parameters
+        with open('params_pass_%d.tar' % event.pass_id, 'w') as f:
+            trainer.save_parameter_to_tar(f)
+
+        result = trainer.test(
+            reader=paddle.batch(
+                paddle.dataset.cifar.reader_creator('./ci/Foods.tar.gz', 'testdata_batch_0'), batch_size=128),
+            feeding=feeding)
+        print "\nTest with Pass %d, %s" % (event.pass_id, result.metrics)
+
+
+trainer.train(
+    reader=reader,
+    num_passes=100,
+    event_handler=event_handler,
+    feeding=feeding)
+# 验证模型
+from PIL import Image
+import numpy as np
+import os
 
 
 def load_image(file):
